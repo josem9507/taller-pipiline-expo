@@ -1,0 +1,88 @@
+# This workflow will do a clean install of node dependencies, build the source code and run tests across different versions of node
+# For more information see: https://help.github.com/actions/language-and-framework-guides/using-nodejs-with-github-actions
+
+name: Enfasis3 pipeline CI
+on:
+  push:
+    branches: [ main, develop]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  sonarcloud:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        fetch-depth: 0
+    - name: SonarCloud Scan
+      uses: sonarsource/sonarcloud-github-action@master
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    - name: SonarCloud breaker
+      uses: jkumar19/sonar-build-breaker@3.0.0
+      with:
+        sonar_url: "https://sonarcloud.io"
+        sonar_branch: "main"
+        sonar_token: ${{ secrets.SONAR_TOKEN }}
+        project_key: ${{ secrets.SONAR_KEY }}
+  build:
+    needs: sonarcloud
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [14.x]
+    steps:
+    - uses: actions/checkout@v2
+    - name: Use Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v2
+      with:
+        node-version: ${{ matrix.node-version }}
+    - run: npm i
+    - run: npm run test
+    
+    - run: npm run build
+    - name: Publish artifact
+      uses: actions/upload-artifact@v2
+      with:
+        name: dist-artifact
+        path: dist/
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v1
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v1
+    - name: Login to DockerHub
+      uses: docker/login-action@v1 
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+    - name: Build and push
+      id: docker_build
+      uses: docker/build-push-action@v2
+      with:
+        context: .
+        push: true
+        tags: ${{ secrets.DOCKERHUB_USERNAME }}/pet-book:latest
+    - name: Image digest
+      run: echo ${{ steps.docker_build.outputs.digest }}
+  publish-s3-artifact:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@master
+        with:
+          name: dist-artifact
+          path: dist
+      - name: Zip the results
+        uses: papeloto/action-zip@v1
+        with:
+          files: dist/
+          dest: result.zip
+      - name: Upload to S3 as artifact
+        uses: medlypharmacy/s3-artifacts-action@master
+        with:
+          aws_access_key_id: ${{ secrets.S3_BUILD_ARTIFACTS_ACCESS_KEY_ID}}
+          aws_secret_access_key: ${{ secrets.S3_BUILD_ARTIFACTS_SECRET_ACCESS_KEY}}
+          aws_s3_bucket_name: ${{ secrets.S3_BUCKET_NAME }}
+          source_path: result.zip
